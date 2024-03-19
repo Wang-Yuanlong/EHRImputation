@@ -45,31 +45,21 @@ class Imputer(nn.Module):
                         )
 
     def forward(self, x, mask):
-        # # x: (batch_size, seq_len, varible_num)
-        # # mask: (batch_size, seq_len, varible_num)
-        # x, mask = x.transpose(1, 2), mask.transpose(1, 2)
-        # x = self.embedding(x)
-        # x = x * mask.unsqueeze(-1)
-        # # x: (batch_size, varible_num, seq_len, hidden_dim)
-        
-        # b, v, l, h = x.size()
-        # x = x.view(b * v, l, h)
-        # x, _ = self.lstm(x)
-        # x = self.decoder(x)
-        # x = (x.view(b, v, l, -1) * mask.unsqueeze(-1)).transpose(1, 2).squeeze()
-
         # x: (batch_size, seq_len, varible_num)
         x = self.embedding(x)
         x = self.mapping(x)
         x = x * mask.unsqueeze(-1)
+
         # x: (batch_size, seq_len, varible_num, hidden_dim)
         b, l, v, h = x.size()
         x = x.view(b * l, v, h)
         x = self.pooling(x.transpose(-1, -2)).squeeze(-1)
         x = x.view(b, l, -1)
+
         # x: (batch_size, seq_len, hidden_dim)
         x, _ = self.lstm(x)
         x = self.decoder(x)
+        
         # x: (batch_size, seq_len, varible_num)
         x = x * mask
         return x

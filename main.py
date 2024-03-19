@@ -36,7 +36,7 @@ test_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_
 
 model = Imputer(bidirectional=bidirectional).to(device)
 criterion = torch.nn.MSELoss(reduction='sum')
-optimizer = torch.optim.AdamW(model.parameters())#, lr=1e-4, weight_decay=1e-5)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
 def train_epoch(model, train_loader, criterion, optimizer, device):
     model.train()
@@ -89,7 +89,6 @@ def val_epoch(model, test_loader, criterion, device):
     all_pred = pad_sequence(all_pred, batch_first=True, padding_value=0)
     all_gt = pad_sequence(all_gt, batch_first=True, padding_value=0)
     all_mask = pad_sequence(all_mask, batch_first=True, padding_value=0)
-    # metric_list = compute_nRMSE(all_pred[:,:,1:].cpu().numpy(), all_gt[:,:,1:].cpu().numpy(), all_mask[:,:,1:].cpu().numpy())
     metric_list = compute_nRMSE(all_pred.cpu().numpy(), all_gt.cpu().numpy(), all_mask.cpu().numpy())
     return total_loss / item_num, np.mean(metric_list[:2])
 
@@ -106,9 +105,7 @@ def test_epoch(model, test_loader, criterion, device):
     for idx, (data, data_mask, target_mask, gt) in enumerate((test_loader)):
         data, data_mask, target_mask, gt = data.to(device), data_mask.to(device), target_mask.to(device), gt.to(device)
         output = model(data, data_mask)
-        # loss = criterion(output * target_mask, data * target_mask)
         mask = data_mask - 1 + target_mask
-        # loss = criterion(output * target_mask, gt * target_mask)
         all_pred += [x for x in output]
         all_gt += [x for x in gt]
         all_mask += [x for x in mask]
@@ -118,7 +115,6 @@ def test_epoch(model, test_loader, criterion, device):
     all_pred = pad_sequence(all_pred, batch_first=True, padding_value=0)
     all_gt = pad_sequence(all_gt, batch_first=True, padding_value=0)
     all_mask = pad_sequence(all_mask, batch_first=True, padding_value=0)
-    # metric_list = compute_nRMSE(all_pred[:,:,1:].cpu().numpy(), all_gt[:,:,1:].cpu().numpy(), all_mask[:,:,1:].cpu().numpy())
     metric_list = compute_nRMSE(all_pred.cpu().numpy(), all_gt.cpu().numpy(), all_mask.cpu().numpy())
     return metric_list
 
@@ -127,7 +123,7 @@ def best_test(model, test_loader, criterion, device):
     model.load_state_dict(torch.load('saved_model/best_model.pth'))
     model.eval()
     # print('\t' + ','.join(lab_event_list) + ',mean,std,support')
-    print('\t' + ','.join(imp_event_list) + ',mean,std,support')
+    print('\t' + ','.join(imp_event_list))
     dataset.set_split('train')
     losses = test_epoch(model, test_loader, criterion, device)
     # print('train\t' + ','.join([f'{x:.4f}' for x in losses] + [f'{x:.4f}' for x in (losses.mean(), losses.std(), len(dataset))]))

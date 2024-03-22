@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 import numpy as np
 from torch.utils.data import DataLoader
@@ -9,13 +10,15 @@ from tqdm import tqdm
 from dataset import ImpData, imp_event_list
 from model import Imputer
 from metric import compute_nRMSE
+from utils import get_lr, change_lr
 # from sklearn.metrics import roc_auc_score, classification_report
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-e', '--epochs', type=int, default=30)
 parser.add_argument('-b', '--batch_size', type=int, default=16)
 parser.add_argument('-t', '--test_only', action='store_true')
-parser.add_argument('--bidirectional', action='store_true')
+parser.add_argument('-bi', '--bidirectional', action='store_true')
+parser.add_argument('-g', '--gpu_no', type=int, default=1)
 
 args = parser.parse_args()
 print(args)
@@ -24,7 +27,7 @@ batch_size = args.batch_size
 test_only = args.test_only
 bidirectional = args.bidirectional
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device(f'cuda:{args.gpu_no}' if torch.cuda.is_available() else 'cpu')
 
 # dataset = EHRData()
 # train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=EHRData.get_collate())
@@ -36,7 +39,8 @@ test_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_
 
 model = Imputer(bidirectional=bidirectional).to(device)
 criterion = torch.nn.MSELoss(reduction='none')
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-5)
+optimizer = torch.optim.AdamW(model.parameters(), weight_decay=5e-3)
+lrs = get_lr(lrs=[3e-4, 1e-4, 5e-5, 1e-5], epoch=epochs)
 
 def train_epoch(model, train_loader, criterion, optimizer, device):
     model.train()
@@ -51,17 +55,20 @@ def train_epoch(model, train_loader, criterion, optimizer, device):
         output = model(data, data_mask)
         # loss = criterion(output * target_mask, data * target_mask)
         loss = criterion(output, gt)
-        valid_loss = loss[data_mask == 1]
-        loss_m = valid_loss.mean()
+        init_mask = data_mask - target_mask
+        init_loss = loss[init_mask == 1]
+        target_loss = loss[target_mask == 1]
+        loss_m = init_loss.mean() + target_loss.mean()
         
-        loss_m.backward()
         optimizer.zero_grad()
+        loss_m.backward()
         optimizer.step()
-        total_loss += valid_loss.sum().item()
-        item_num += len(valid_loss)
+        total_loss += (init_loss.sum() + target_loss.sum()).item()
+        item_num += len(init_loss) + len(target_loss)
 
         if idx % 50 == 0:
-            print(f'Batch [{idx+1}/{len(train_loader)}] Loss: {loss_m.item():.4f}')
+            print(f'Batch [{idx+1}/{len(train_loader)}] Init Loss: {init_loss.mean().item():.4f} Target Loss: {target_loss.mean().item():.4f} Total Loss: {total_loss / item_num:.4f}')
+            sys.stdout.flush()
     return total_loss / item_num
 
 @torch.no_grad()
@@ -95,12 +102,14 @@ def val_epoch(model, test_loader, criterion, device):
         all_pred += [x for x in output]
         all_gt += [x for x in gt]
         all_mask += [x for x in mask]
-        total_loss += loss.item()
+
+        total_loss += valid_loss.sum().item()
         item_num += len(valid_loss)
         total_init_loss += init_loss.sum().item()
         init_item_num += len(init_loss)
         total_target_loss += target_loss.sum().item()
         target_item_num += len(target_loss)
+
     all_pred = pad_sequence(all_pred, batch_first=True, padding_value=0)
     all_gt = pad_sequence(all_gt, batch_first=True, padding_value=0)
     all_mask = pad_sequence(all_mask, batch_first=True, padding_value=-1)
@@ -142,19 +151,21 @@ def best_test(model, test_loader, criterion, device):
     dataset.set_split('train')
     losses = test_epoch(model, test_loader, criterion, device)
     # print('train\t' + ','.join([f'{x:.4f}' for x in losses] + [f'{x:.4f}' for x in (losses.mean(), losses.std(), len(dataset))]))
-    print('train\t' + f'{losses}')
+    print('train\t' + f'{losses}', flush=True)
     dataset.set_split('val')
     losses = test_epoch(model, test_loader, criterion, device)
     # print('val\t' + ','.join([f'{x:.4f}' for x in losses] + [f'{x:.4f}' for x in (losses.mean(), losses.std(), len(dataset))]))
-    print('val\t' + f'{losses}')
+    print('val\t' + f'{losses}', flush=True)
     dataset.set_split('test')
     losses = test_epoch(model, test_loader, criterion, device)
     # print('test\t' + ','.join([f'{x:.4f}' for x in losses] + [f'{x:.4f}' for x in (losses.mean(), losses.std(), len(dataset))]))
-    print('test\t' + f'{losses}')
+    print('test\t' + f'{losses}', flush=True)
 
 def train(model, train_loader, test_loader, criterion, optimizer, device, epochs):
     best_RMSE = float('inf')
     for epoch in range(epochs):
+        lr = next(lrs)
+        change_lr(optimizer, lr)
         dataset.set_split('train')
         print(f'\nEpoch [{epoch+1}/{epochs}]')
         train_loss = train_epoch(model, train_loader, criterion, optimizer, device)
@@ -164,13 +175,14 @@ def train(model, train_loader, test_loader, criterion, optimizer, device, epochs
         print(f'Epoch [{epoch+1}/{epochs}] Train Loss: {train_loss:.4f} Train RMSE: {train_RMSE:.4f} Val RMSE: {val_RMSE:.4f}')
         print('Breakdown loss - Train: ({:.4f},{:.4f},{:.4f})'.format(*train_loss_list))
         print('Breakdown loss - Val: ({:.4f},{:.4f},{:.4f})'.format(*val_loss))
+        sys.stdout.flush()
         if val_RMSE < best_RMSE:
-            print(f'New best model with RMSE: {best_RMSE:.4f} -> {val_RMSE:.4f}')
+            print(f'New best model with RMSE: {best_RMSE:.4f} -> {val_RMSE:.4f}', flush=True)
             best_RMSE = val_RMSE
             torch.save(model.state_dict(), 'saved_model/best_model.pth')
     dataset.set_split('test')
     test_loss, test_RMSE = val_epoch(model, test_loader, criterion, device)
-    print(f'Test Loss: ({test_loss[0]:.4f}, {test_loss[1]:.4f}, {test_loss[2]:.4f}) Test RMSE: {test_RMSE:.4f}')
+    print(f'Test Loss: ({test_loss[0]:.4f}, {test_loss[1]:.4f}, {test_loss[2]:.4f}) Test RMSE: {test_RMSE:.4f}', flush=True)
     best_test(model, test_loader, torch.nn.MSELoss(reduction='none'), device)
 
 if __name__ == '__main__':

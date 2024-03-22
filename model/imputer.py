@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn.utils.rnn import pack_padded_sequence, unpack_sequence
 
 class ValueEmbedding(nn.Module):
     def __init__(self, var_num, input_dim=1, output_dim=64):
@@ -18,7 +19,7 @@ class ValueEmbedding(nn.Module):
         return x
 
 class Imputer(nn.Module):
-    def __init__(self, varible_num=27, hidden_dim=512, output_dim=1, n_layers=2, dropout=0.1, bidirectional=False):
+    def __init__(self, varible_num=27, hidden_dim=512, output_dim=1, n_layers=2, dropout=0.15, bidirectional=False):
         super(Imputer, self).__init__()
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
@@ -30,15 +31,15 @@ class Imputer(nn.Module):
         self.embedding = ValueEmbedding(varible_num, output_dim=hidden_dim)
         self.mapping = nn.Sequential(
                             nn.Linear(hidden_dim, hidden_dim),
-                            nn.ReLU(),
+                            nn.GELU(),
                             nn.Dropout(dropout),
                             nn.Linear(hidden_dim, hidden_dim)
                         )
         self.lstm = nn.LSTM(hidden_dim, hidden_dim, n_layers, dropout=dropout, batch_first=True, bidirectional=bidirectional)
-        self.pooling = nn.AdaptiveMaxPool1d(1)
+        self.agg = nn.AdaptiveMaxPool1d(1)
         self.decoder = nn.Sequential(
                             nn.Linear(self.D * hidden_dim, hidden_dim // 2),
-                            nn.ReLU(),
+                            nn.GELU(),
                             nn.Dropout(dropout),
                             # nn.Linear(hidden_dim // 2, output_dim),
                             nn.Linear(hidden_dim // 2, varible_num)
@@ -50,11 +51,11 @@ class Imputer(nn.Module):
         
         # x: (batch_size, seq_len, varible_num, hidden_dim)
         x = self.mapping(x)
-        x = x * mask.unsqueeze(-1)
+        # x = x * mask.unsqueeze(-1)
 
         b, l, v, h = x.size()
         x = x.view(b * l, v, h)
-        x = self.pooling(x.transpose(-1, -2)).squeeze(-1)
+        x = self.agg(x.transpose(-1, -2)).squeeze(-1)
         x = x.view(b, l, -1)
 
         # x: (batch_size, seq_len, hidden_dim)

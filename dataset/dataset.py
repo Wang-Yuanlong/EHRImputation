@@ -37,11 +37,10 @@ class ImpData(Dataset):
                                   else (x - self.feature_ms_dict[x.name][0])/self.feature_ms_dict[x.name][1], 
                           axis=0)
         data_mask = 1 - data.isna().astype(int).values
-        data = data.fillna(0).values
+        data = data.ffill().bfill().apply(lambda x: x if not x.isna().all() else self.feature_ms_dict[x.name][0]).values
         gt_mask = 1 - gt.isna().astype(int).values
         gt = gt.fillna(0).values
         target_mask = gt_mask - data_mask
-        assert target_mask.min() >= 0
 
         data = torch.tensor(data).float()
         data_mask = torch.tensor(gt_mask).int()
